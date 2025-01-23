@@ -57,10 +57,124 @@ from .tuners import (
 )
 
 from .utils import (
-    PeftConfig
+    PeftConfig,
+
+    PeftType,
+    PromptLearningConfig
 )
 
 
 
 class PeftModel(PushToHubMixin, torch.nn.Module):
-    pass
+    def __init__(self, model, peft_config:PeftConfig):
+        super().__init__()
+        self.peft_config = peft_config
+        self.base_model = model
+        self.config = self.base_model.config
+        self.modules_to_save = None
+
+
+
+
+
+    
+
+    def save_pretrained(self, save_directory, **kwargs):
+        pass
+
+
+    @classmethod    # 可以用类名调用
+    def from_pretrained(cls, model, model_id, **kwargs):
+        pass
+
+
+    
+    def _setup_prompt_encoder(self):
+        pass
+
+
+    def get_prompt_embedding_to_save(self):
+        pass
+
+
+
+    def get_prompt(self, batch_size):
+        pass
+
+
+    def get_prompt_routing(self, batch_size, input_ids, inputs_embeds, attention_mask):
+        pass    
+
+
+
+
+    def print_trainable_parameters(self):
+        """
+        Prints the number of trainable parameters in the model.
+        """
+
+
+    def __getattr__(self, name:str):
+        """Forward missing attributes to the wrapped module."""
+
+
+
+    def forward(self, *args, **kwargs):
+        """
+        Forward pass of the model.
+        """
+
+
+
+
+
+
+class PeftModelForSequenceClassification(PeftModel):
+    def __init__(self, model, peft_config:PeftConfig):
+        super().__init__(model, peft_config)
+        self.modules_to_save = ["classifier", "score"]
+
+        for name, _ in self.base_model.named_children():
+            if any()
+    
+
+
+    def forward(self,):
+        pass
+
+
+
+    def _prefix_tuning_forward(self):
+        pass
+
+
+
+
+
+
+
+
+
+class PeftModelForCausalLM(PeftModel):
+    """
+    Peft model for Causal LM
+
+    Args:
+        model ([`PreTrainedModel`]): Base transformer model
+        peft_config ([`PeftConfig`]): Peft config.
+
+
+    Example::
+
+        >>> from transformers import AutoModelForCausalLM >>> from peft import PeftModelForCausalLM, get_peft_config
+        >>> config = {
+                'peft_type': 'PREFIX_TUNING', 'task_type': 'CAUSAL_LM', 'inference_mode': False, 'num_virtual_tokens':
+                20, 'token_dim': 1280, 'num_transformer_submodules': 1, 'num_attention_heads': 20, 'num_layers': 36,
+                'encoder_hidden_size': 1280, 'prefix_projection': False, 'postprocess_past_key_value_function': None
+            }
+        >>> peft_config = get_peft_config(config) >>> model = AutoModelForCausalLM.from_pretrained("gpt2-large") >>>
+        peft_model = PeftModelForCausalLM(model, peft_config) >>> peft_model.print_trainable_parameters() trainable
+        params: 1843200 || all params: 775873280 || trainable%: 0.23756456724479544
+    """
+    def __init__(self):
+        pass
