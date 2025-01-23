@@ -2,6 +2,7 @@
 ---
 - Reproduce a prompt-learning technique called: Mixture-of-Prompts, from the paper 《SMoP: Towards Efficient and Effective Prompt Tuning with Sparse Mixture-of-Prompts》
 
+![image](https://github.com/user-attachments/assets/5757d121-3c3c-4237-9234-df0035b7a98f)
 
 
 
