@@ -53,19 +53,46 @@ from huggingface_hub import hf_hub_download
 
 
 from .tuners import (
-    LoraModel
+    LoraModel,
 )
 
 from .utils import (
     PeftConfig,
 
     PeftType,
-    PromptLearningConfig
+    PromptLearningConfig,
+    _set_trainable,
 )
 
 
 
 class PeftModel(PushToHubMixin, torch.nn.Module):
+    """
+    Parameter-Efficient Fine-Tuning Model. Base model encompassing various Peft methods.
+
+    Args:
+        model ([`PreTrainedModel`]): The base transformer model used for Peft.
+        peft_config ([`PeftConfig`]): The configuration of the Peft model.
+
+
+    **Attributes**:
+        - **base_model** ([`PreTrainedModel`]) -- The base transformer model used for Peft.
+        - **peft_config** ([`PeftConfig`]) -- The configuration of the Peft model.
+        - **modules_to_save** (`list` of `str`) -- The list of sub-module names to save when
+        saving the model.
+        - **prompt_encoder** ([`PromptEncoder`]) -- The prompt encoder used for Peft if
+        `isinstance(self.peft_config, PromptLearningConfig)`.
+
+        - **prompt_tokens** (`torch.Tensor`) -- The virtual prompt tokens used for Peft if
+        `isinstance(self.peft_config, PromptLearningConfig)`.
+
+        - **transformer_backbone_name** (`str`) -- The name of the transformer
+        backbone in the base model if `isinstance(self.peft_config, PromptLearningConfig)`.
+            - 骨干网络，通常是指一个预训练的大型模型
+
+        - **word_embeddings** (`torch.nn.Embedding`) -- The word embeddings of the transformer backbone
+        in the base model if `isinstance(self.peft_config, PromptLearningConfig)`.
+    """
     def __init__(self, model, peft_config:PeftConfig):
         super().__init__()
         self.peft_config = peft_config
@@ -73,15 +100,42 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
         self.config = self.base_model.config
         self.modules_to_save = None
 
+        if isinstance(self.peft_config, PromptLearningConfig):
+            self._setup_prompt_encoder()
+        else:
+            self.base_model = LoraModel(peft_config, model)
 
-
-
+        if getattr(self.peft_config, "modules_to_save", None) is not None:
+            self.modules_to_save = self.peft_config.modules_to_save
+            _set_trainable(self)
+        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     
 
     def save_pretrained(self, save_directory, **kwargs):
-        pass
+        r"""
+        Args:
+        This function saves the adapter model and the adapter configuration files to a directory, so that it can be
+        re-loaded using the `LoraModel.from_pretrained` class method, and also used by the `LoraModel.push_to_hub`
+        method.
+            save_directory (`str`):
+                Directory where the adapter model and configuration files will be saved (will be created if it does not
+                exist).
+            **kwargs:
+                Additional keyword arguments passed along to the `push_to_hub` method.
+        """
 
+        if os.path.isfile(save_directory):
+            raise ValueError(f"{save_directory} should be a directory, not a file")
+
+        os.makedirs(save_directory, exist_ok=True)
+
+
+        # save only the trainable weights
+
+
+        
 
     @classmethod    # 可以用类名调用
     def from_pretrained(cls, model, model_id, **kwargs):
