@@ -144,11 +144,20 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
 
     
     def _setup_prompt_encoder(self):
-        pass
+        num_transformer_submodules = 0
+        transformer_backbone = None
 
 
     def get_prompt_embedding_to_save(self):
-        pass
+        """
+        Returns the prompt embedding to save when saving the model. Only applicable when `peft_config.peft_type !=
+        PeftType.LORA`.
+        """
+        
+        prompt_tokens = ""
+        
+        if self.peft_config.peft_type == PeftType.PrefixTuning:
+            pass
 
 
 
@@ -230,5 +239,169 @@ class PeftModelForCausalLM(PeftModel):
         peft_model = PeftModelForCausalLM(model, peft_config) >>> peft_model.print_trainable_parameters() trainable
         params: 1843200 || all params: 775873280 || trainable%: 0.23756456724479544
     """
-    def __init__(self):
-        pass
+
+    def __init__(self, model, peft_config: PeftConfig):
+        super().__init__(model, peft_config)
+        self.base_model_prepare_inputs_for_generation = self.base_model.prepare_inputs_for_generation
+        self.base_model.prepare_inputs_for_generation = self.prepare_inputs_for_generation
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        labels=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+        **kwargs,
+    ):
+        if not isinstance(self.peft_config, PromptLearningConfig):
+            return self.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                **kwargs,
+            )
+            
+            
+            
+            
+
+
+
+
+class PeftModelForSeq2SeqLM(PeftModel):
+    """
+    Peft model for Seq2Seq LM
+
+    Args:
+        model ([`PreTrainedModel`]): Base transformer model
+        peft_config ([`PeftConfig`]): Peft config.
+
+
+    Example::
+
+        >>> from transformers import AutoModelForSeq2SeqLM >>> from peft import PeftModelForSeq2SeqLM, get_peft_config
+        >>> config = {
+                'peft_type': 'LORA', 'task_type': 'SEQ_2_SEQ_LM', 'inference_mode': False, 'r': 8, 'target_modules':
+                ['q', 'v'], 'lora_alpha': 32, 'lora_dropout': 0.1, 'merge_weights': False, 'fan_in_fan_out': False,
+                'enable_lora': None, 'bias': 'none'
+            }
+        >>> peft_config = get_peft_config(config) >>> model = AutoModelForSeq2SeqLM.from_pretrained("t5-base") >>>
+        peft_model = PeftModelForSeq2SeqLM(model, peft_config) >>> peft_model.print_trainable_parameters() trainable
+        params: 884736 || all params: 223843584 || trainable%: 0.3952474242013566
+    """
+
+    def __init__(self, model, peft_config: PeftConfig):
+        super().__init__(model, peft_config)
+        self.base_model_prepare_inputs_for_generation = self.base_model.prepare_inputs_for_generation
+        self.base_model.prepare_inputs_for_generation = self.prepare_inputs_for_generation
+        self.base_model_prepare_encoder_decoder_kwargs_for_generation = (
+            self.base_model._prepare_encoder_decoder_kwargs_for_generation
+        )
+        self.base_model._prepare_encoder_decoder_kwargs_for_generation = (
+            self._prepare_encoder_decoder_kwargs_for_generation
+        )
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        decoder_input_ids=None,
+        decoder_attention_mask=None,
+        decoder_inputs_embeds=None,
+        labels=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+        **kwargs,
+    ):
+        if not isinstance(self.peft_config, PromptLearningConfig):
+            return self.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask,
+                decoder_inputs_embeds=decoder_inputs_embeds,
+                labels=labels,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                **kwargs,
+            )
+            
+            
+            
+
+
+
+
+class PeftModelForTokenClassification(PeftModel):
+    """
+    Peft model for sequence classification tasks.
+
+    Args:
+        model ([`PreTrainedModel`]): Base transformer model
+        peft_config ([`PeftConfig`]): Peft config.
+
+    **Attributes**:
+        - **config** ([`PretrainedConfig`]) -- The configuration object of the base model.
+        - **cls_layer_name** (`str`) -- The name of the classification layer.
+
+    Example::
+
+        >>> from transformers import AutoModelForSequenceClassification >>> from peft import
+        PeftModelForTokenClassification, get_peft_config >>> config = {
+                'peft_type': 'PREFIX_TUNING', 'task_type': 'TOKEN_CLS', 'inference_mode': False, 'num_virtual_tokens':
+                20, 'token_dim': 768, 'num_transformer_submodules': 1, 'num_attention_heads': 12, 'num_layers': 12,
+                'encoder_hidden_size': 768, 'prefix_projection': False, 'postprocess_past_key_value_function': None
+            }
+        >>> peft_config = get_peft_config(config) >>> model =
+        AutoModelForTokenClassification.from_pretrained("bert-base-cased") >>> peft_model =
+        PeftModelForTokenClassification(model, peft_config) >>> peft_model.print_trainable_parameters() trainable
+        params: 370178 || all params: 108680450 || trainable%: 0.3406113979101117
+    """
+
+    def __init__(self, model, peft_config: PeftConfig):
+        super().__init__(model, peft_config)
+        self.modules_to_save = ["classifier", "score"]
+
+        for name, _ in self.base_model.named_children():
+            if any(module_name in name for module_name in self.modules_to_save):
+                self.cls_layer_name = name
+                break
+
+        # to make sure classifier layer is trainable
+        _set_trainable(self)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        labels=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+        **kwargs,
+    ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        if not isinstance(self.peft_config, PromptLearningConfig):
+            return self.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+                **kwargs,
+            )
