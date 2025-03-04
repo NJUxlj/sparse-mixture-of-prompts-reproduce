@@ -44,6 +44,9 @@ def _set_trainable(model):
 def fsdp_auto_wrap_policy(model):
     '''
     过时的东西，现在全面转向DeepSpeed
+    
+    这段代码定义了一个用于FSDP（Fully Sharded Data Parallel）自动包装策略的函数。
+    FSDP是一种分布式训练技术，用于在多个GPU上高效地训练大型模型。
     '''
     
     import functools
@@ -55,6 +58,10 @@ def fsdp_auto_wrap_policy(model):
     from ..tuners import PrefixEncoder, PromptEmbedding, PromptEncoder
     
     def lambda_policy_fn(module):
+        '''
+        这个函数用于判断一个模块是否应该被包装
+            条件：模块没有子模块、有可训练权重
+        '''
         if (
             len(list(module.named_children())) == 0
             and getattr(module, "weight", None) is not None
@@ -64,7 +71,7 @@ def fsdp_auto_wrap_policy(model):
         return False
 
     lambda_policy = functools.partial(lambda_auto_wrap_policy, lambda_fn=lambda_policy_fn)
-    transformer_wrap_policy = functools.partial(
+    transformer_wrap_policy = functools.partial( # transformer_wrap_policy：针对Transformer层的包装策略
         transformer_auto_wrap_policy,
         transformer_layer_cls=(
             PrefixEncoder,
