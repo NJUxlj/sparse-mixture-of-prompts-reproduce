@@ -35,11 +35,11 @@ def construct_dev_from_train_t2t(train_list, num_labels):
 
 
 def boolq(text_to_text):
-    
+
     path = "data/superglue/boolq"
     train = pickle.load(open(os.path.join(path, 'train.pkl'), 'rb'))
     val = pickle.load(open(os.path.join(path, 'validation.pkl'), 'rb'))
-    
+
     if text_to_text: # 特点： passage 和 question 组成一个大的字符串
         # https://huggingface.co/datasets/stjokerli/TextToText_boolq/viewer/stjokerli--TextToText_boolq/train
         text_format = f"boolq passage: **passage** question: **question**"
@@ -64,17 +64,51 @@ def cb(text_to_text):
     train = pickle.load(open(os.path.join(path, 'train.pkl'), 'rb'))
     val = pickle.load(open(os.path.join(path, 'validation.pkl'), 'rb'))
 
+    if text_to_text:
+        pass
+
+    else:
+        pass
+
+
+
+
+
 def copa(text_to_text):
     path = "data/superglue/copa"
     train = pickle.load(open(os.path.join(path, 'train.pkl'), 'rb'))
     val = pickle.load(open(os.path.join(path, 'validation.pkl'), 'rb'))
-    
-    
-    
+
+    if text_to_text:
+        pass
+    else:
+        pass
+
+
+
 def multirc(text_to_text):
     path = "data/superglue/multirc"
     train = pickle.load(open(os.path.join(path, 'train.pkl'), 'rb'))
     val = pickle.load(open(os.path.join(path, 'validation.pkl'), 'rb'))
+
+    if text_to_text:
+        text_format = "multirc question: **question** answer: **answer**. paragraph: **paragraph**"
+        labels = ["False", "True"]
+
+        train_list = [(f"question: {d['question']} answer: {d['answer']}. paragraph: {d['paragraph']}", labels[d['label']]) for d in train]
+        val_list = [(f"question: {d['question']} answer: {d['answer']}. paragraph: {d['paragraph']}", labels[d['label']]) for d in val]
+        num_labels = len(labels)
+
+    else:
+        train_list = [((d['paragraph'], f"{d['question']} {d['answer']}"), d['label']) for d in train]
+        val_list = [((d['paragraph'], f"{d['question']} {d['answer']}"), d['label']) for d in val]
+        num_labels = max(train['label']) + 1
+
+    return train_list, val_list, num_labels
+
+
+
+
 
 
 
@@ -99,27 +133,27 @@ def get_superglue(data_name, split, text_to_text=False):
 
     if data_name not in data_funcs:
         raise ValueError(f"Invalid data_name '{data_name}'.")
-    
+
     if data_name == 'semeval':
         train_list, val_list, test_list, num_labels = data_funcs[data_name](text_to_text)
-    
+
     else:
         train_list, val_list, num_labels = data_funcs[data_name](text_to_text)
-        
+
         if text_to_text:
-            
+
             test_list = val_list
             train_list, val_list = construct_dev_from_train_t2t(train_list, num_labels)
-            
+
         else:
             val_list, test_list = construct_test_from_dev(val_list, num_labels)
-    
+
     if split == "train":
         return train_list, num_labels
-    
+
     elif split == "dev":
         return val_list, num_labels
-    
+
     elif split == "test":
         return test_list, num_labels
     else:
