@@ -166,7 +166,71 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
 
     @classmethod    # 可以用类名调用
     def from_pretrained(cls, model, model_id, **kwargs):
-        pass
+        r"""
+        Args:
+        Instantiate a `LoraModel` from a pretrained Lora configuration and weights.
+            model (`transformers.PreTrainedModel`):
+                The model to be adapted. The model should be initialized with the `from_pretrained` method. from
+                `transformers` library.
+            model_id (`str`):
+                The name of the Lora configuration to use. Can be either:
+                    - A string, the `model id` of a Lora configuration hosted inside a model repo on
+                        huggingface Hub
+                    - A path to a directory containing a Lora configuration file saved using the
+                        `save_pretrained` method, e.g., ``./my_lora_config_directory/``.
+        """ 
+        from .mapping import MODEL_TYPE_TO_PEFT_MODEL_MAPPING, PEFT_TYPE_TO_CONFIG_MAPPING
+
+        # load the config
+        config = PEFT_TYPE_TO_CONFIG_MAPPING[PeftConfig.from_pretrained(model_id).peft_type].from_pretrained(model_id)
+
+        if getattr(model, "hf_device_map", None) is not None:
+            remove_hook_from_submodules(model)
+
+        if config.task_type not in MODEL_TYPE_TO_PEFT_MODEL_MAPPING.keys():
+            model = cls(model, config)
+        else:
+            model = MODEL_TYPE_TO_PEFT_MODEL_MAPPING[config.task_type](model, config)
+            
+        # load weights if any
+        if os.path.exists(os.path.join(model_id, WEIGHTS_NAME)):
+            filename = os.path.join(model_id, WEIGHTS_NAME)
+        else:
+            try:
+                filename = hf_hub_download(model_id, WEIGHTS_NAME)
+            except:  # noqa
+                raise ValueError(
+                    f"Can't find weights for {model_id} in {model_id} or in the Hugging Face Hub. "
+                    f"Please check that the file {WEIGHTS_NAME} is present at {model_id}."
+                )
+
+        adapters_weights = torch.load(filename)
+        # load the weights into the model
+        model = set_peft_model_state_dict(model, adapters_weights)
+        if getattr(model, "hf_device_map", None) is not None:
+            device_map = kwargs.get("device_map", "auto")
+            max_memory = kwargs.get("max_memory", None)
+            no_split_module_classes = model._no_split_modules
+            if device_map != "sequential":
+                max_memory = get_balanced_memory(
+                    model,
+                    max_memory=max_memory,
+                    no_split_module_classes=no_split_module_classes,
+                    low_zero=(device_map == "balanced_low_0"),
+                )
+                
+            if isinstance(device_map, str):
+                device_map = infer_auto_device_map(
+                    model, max_memory=max_memory, no_split_module_classes=no_split_module_classes
+                )
+            model = dispatch_model(model, device_map=device_map)
+            hook = AlignDevicesHook(io_same_device=True)
+            if model.peft_config.peft_type == PeftType.LORA:
+                add_hook_to_module(model.base_model.model, hook)
+            else:
+                remove_hook_from_submodules(model.prompt_encoder)
+                add_hook_to_module(model.base_model, hook)
+        return model
 
 
     
@@ -296,12 +360,44 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
 
 
 class PeftModelForSequenceClassification(PeftModel):
+    """
+    Peft model for sequence classification tasks.
+
+    Args:
+        model ([`PreTrainedModel`]): Base transformer model
+        peft_config ([`PeftConfig`]): Peft config.
+
+    **Attributes**:
+        - **config** ([`PretrainedConfig`]) -- The configuration object of the base model.
+        - **cls_layer_name** (`str`) -- The name of the classification layer.
+
+    Example::
+
+        >>> from transformers import AutoModelForSequenceClassification >>> from peft import
+        PeftModelForSequenceClassification, get_peft_config >>> config = {
+                'peft_type': 'PREFIX_TUNING', 'task_type': 'SEQ_CLS', 'inference_mode': False, 'num_virtual_tokens':
+                20, 'token_dim': 768, 'num_transformer_submodules': 1, 'num_attention_heads': 12, 'num_layers': 12,
+                'encoder_hidden_size': 768, 'prefix_projection': False, 'postprocess_past_key_value_function': None
+            }
+        >>> peft_config = get_peft_config(config) >>> model =
+        AutoModelForSequenceClassification.from_pretrained("bert-base-cased") >>> peft_model =
+        PeftModelForSequenceClassification(model, peft_config) >>> peft_model.print_trainable_parameters() trainable
+        params: 370178 || all params: 108680450 || trainable%: 0.3406113979101117
+    """
+
     def __init__(self, model, peft_config:PeftConfig):
         super().__init__(model, peft_config)
         self.modules_to_save = ["classifier", "score"]
 
-        for name, _ in self.base_model.named_children():
-            if any()
+        for name, _ in self.base_model.named_children():  # 在所有的子模块中搜索到分类头
+            if any(module_name in name  for module_name in self.modules_to_save):
+                self.cls_layer_name = name
+                break
+            
+            
+        # to make sure classifier layer is trainable
+        _set_trainable(self)
+                
     
 
 
