@@ -58,10 +58,13 @@ from .tuners import (
 
 from .utils import (
     PeftConfig,
-
+    TaskType,
     PeftType,
     PromptLearningConfig,
     _set_trainable,
+    get_peft_model_state_dict,
+    set_peft_model_state_dict,
+    shift_tokens_right,
 )
 
 
@@ -132,7 +135,31 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
         os.makedirs(save_directory, exist_ok=True)
 
 
-        # save only the trainable weights
+        # 仅保存可训练的权重。调用 get_peft_model_state_dict 函数获取可训练权重的状态字典，
+        # 若 kwargs 中提供了 state_dict 则使用该字典，否则使用默认逻辑获取。
+        # 然后将这些可训练权重保存到指定目录下的权重文件中。
+        output_state_dict = get_peft_model_state_dict(self, kwargs.get("state_dict", None))
+        torch.save(output_state_dict, os.path.join(save_directory, WEIGHTS_NAME))
+        
+        # 保存配置文件，并在保存前将推理模式设置为 True，保存完成后恢复原推理模式。
+        # 首先检查 peft_config 中的 base_model_name_or_path 是否为空，
+        # 若为空，则根据 peft_config 的类型从对应的模型中获取 name_or_path 属性赋值。
+        if self.peft_config.base_model_name_or_path is None:
+            self.peft_config.base_model_name_or_path = (
+                self.base_model.__dict__.get("name_or_path", None)
+                if isinstance(self.peft_config, PromptLearningConfig)
+                else self.base_model.model.__dict__.get("name_or_path", None)
+            )
+        
+        # 保存当前的推理模式，以便后续恢复
+        inference_mode = self.peft_config.inference_mode
+        # 将推理模式设置为 True
+        self.peft_config.inference_mode = True
+        
+        # 将 peft 配置保存到指定目录
+        self.peft_config.save_pretrained(save_directory)
+        # 恢复之前保存的推理模式
+        self.peft_config.inference_mode = inference_mode
 
 
         
@@ -146,6 +173,52 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
     def _setup_prompt_encoder(self):
         num_transformer_submodules = 0
         transformer_backbone = None
+        
+        for name, module in self.base_model.named_children():
+            for param in module.parameters():
+                param.requires_grad = False
+                
+            if isinstance(module, PreTrainedModel):
+                # Make sure to freeze Tranformers model
+                if transformer_backbone is None:
+                    transformer_backbone = module
+                    self.transformerd_backbone_name = name
+                    
+                num_transformer_submodules += 1     # 含义： 表示 Transformer 模型的子模块数量，encoder, decoder 都是子模块， 所以 T5 有两个子模块， qwen只有一个
+
+        self.peft_config.num_transformer_submodules = 2 if self.peft_config.task_type == TaskType.SEQ_2_SEQ_LM else 1
+
+
+        for named_param, value in list(transformer_backbone.named_parameters()):
+            if value.shape[0]==self.base_model.config.vocab_size:
+                self.word_embeddings = transformer_backbone.get_submodule(named_param.replace(".weight",""))
+                break
+            
+            
+        if self.peft_config.peft_type == PeftType.PROMPT_TUNING:
+            prompt_encoder = PromptEmbedding(self.peft_config, self.word_embeddings)
+        elif self.peft_config.peft_type == PeftType.P_TUNING:
+            prompt_encoder = PromptEncoder(self.peft_config)
+        elif self.peft_config.peft_type == PeftType.PREFIX_TUNING:
+            prompt_encoder = PrefixEncoder(self.peft_config)
+        elif self.peft_config.peft_type == PeftType.PROMPT_MIX:
+            prompt_encoder = PromptMixEmbedding(self.peft_config, self.word_embeddings)
+        elif self.peft_config.peft_type == PeftType.PROMPT_ROUTING:
+            prompt_encoder = PromptRoutingEmbedding(self.peft_config, self.word_embeddings)
+        else:
+            raise ValueError("Not supported")
+        self.prompt_encoder = prompt_encoder
+        
+        
+        try:
+        # if self.peft_config.num_virtual_tokens_full is not None:
+            self.prompt_tokens = torch.arange(
+                self.peft_config.num_virtual_tokens_full # * self.peft_config.num_transformer_submodules
+            ).long()
+        except AttributeError:
+            self.prompt_tokens = torch.arange(
+                self.peft_config.num_virtual_tokens * self.peft_config.num_transformer_submodules
+            ).long()
 
 
     def get_prompt_embedding_to_save(self):
@@ -153,11 +226,12 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
         Returns the prompt embedding to save when saving the model. Only applicable when `peft_config.peft_type !=
         PeftType.LORA`.
         """
-        
-        prompt_tokens = ""
-        
-        if self.peft_config.peft_type == PeftType.PrefixTuning:
-            pass
+        prompt_tokens = self.prompt_tokens.unsqueeze(0).expand(1, -1).to(self.device)
+        if self.peft_config.peft_type == PeftType.PREFIX_TUNING:
+            prompt_tokens = prompt_tokens[:, : self.peft_config.num_virtual_tokens]
+        prompt_embeddings = self.prompt_encoder(prompt_tokens)
+        return prompt_embeddings[0].detach().cpu()
+        # return self.prompt_encoder
 
 
 
@@ -166,7 +240,17 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
 
 
     def get_prompt_routing(self, batch_size, input_ids, inputs_embeds, attention_mask):
-        pass    
+        '''
+        作用：
+        1. 输入：batch_size, input_ids, inputs_embeds, attention_mask
+        2. 输出：prompts
+        3. 作用：
+            在输入的 input_ids 的前面加上 prompt tokens 作为前缀， 然后一起输入 prompt encoder， 
+                得到一个 (batch_size, num_virtual_tokens, hidden_size) 的张量
+        '''
+        prompt_tokens = self.prompt_tokens.unsqueeze(0).expand(batch_size, -1).to(self.device)
+        prompts = self.prompt_encoder(prompt_tokens, input_ids, inputs_embeds, attention_mask)  # shape = (batch_size, num_virtual_tokens, hidden_size)
+        return prompts   
 
 
 
@@ -175,10 +259,26 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
         """
         Prints the number of trainable parameters in the model.
         """
+        
+        trainable_params = 0
+        all_param = 0
+        
+        for name, param in self.named_parameters():
+            all_param += param.numel()
+            if param.requires_grad:
+                print(f"parameter name:{name}, param num:{param.numel()}")
+                trainable_params += param.numel()
+        print(
+            f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
+        )
 
 
-    def __getattr__(self, name:str):
+    def __getattr__(self, name: str):
         """Forward missing attributes to the wrapped module."""
+        try:
+            return super().__getattr__(name)  # defer to nn.Module's logic
+        except AttributeError:
+            return getattr(self.base_model, name)
 
 
 
@@ -187,7 +287,10 @@ class PeftModel(PushToHubMixin, torch.nn.Module):
         Forward pass of the model.
         """
 
-
+        if isinstance(self.peft_config, PromptLearningConfig):
+            return self.base_model(*args, **kwargs)
+        else:
+            return self.base_model.model(*args, **kwargs)
 
 
 
